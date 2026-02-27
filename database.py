@@ -2,7 +2,7 @@
 
 import aiosqlite
 import json
-from datetime import datetime, timedelta   # timedelta अब इम्पोर्ट किया गया है
+from datetime import datetime, timedelta
 
 DB_PATH = "osint_bot.db"   # अगर Persistent Disk use kar rahe ho to path change karein
 
