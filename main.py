@@ -6,11 +6,13 @@ import sys
 import re
 import json
 import uuid
+import time
 import asyncio
 import logging
 import threading
+import html
 import aiohttp
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -33,6 +35,7 @@ logger = logging.getLogger(__name__)
 flask_app = Flask(__name__)
 
 # ==================== UTILITY FUNCTIONS ====================
+CACHE_EXPIRY = 300  # 5 minutes
 copy_cache = {}  # {uid: {"data": data, "time": timestamp}}
 
 def clean_branding(text, extra_blacklist=None):
@@ -96,7 +99,7 @@ def get_force_join_keyboard(missing):
 def store_copy_data(data):
     """Store data in cache and return unique ID."""
     uid = str(uuid.uuid4())
-    copy_cache[uid] = {"data": data, "time": datetime.now().timestamp()}
+    copy_cache[uid] = {"data": data, "time": time.time()}
     return uid
 
 def get_copy_button(data):
@@ -151,22 +154,30 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE, cmd
     # Clean branding
     json_str = json.dumps(data, indent=2, ensure_ascii=False)
     cleaned = clean_branding(json_str, cmd_info.get("extra_blacklist", []))
+    # Escape HTML
+    cleaned_escaped = html.escape(cleaned)
 
     # Prepare output
-    output_html = f"<pre>{cleaned}</pre>{FOOTER}"
+    output_html = f"<pre>{cleaned_escaped}</pre>{FOOTER}"
     keyboard = [[get_copy_button(data), get_search_button(cmd)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(output_html, parse_mode='HTML', reply_markup=reply_markup)
 
-    # Save to DB
-    await save_lookup(update.effective_user.id, cmd, query, data)
+    # Save to DB (with error handling)
+    try:
+        await save_lookup(update.effective_user.id, cmd, query, data)
+    except Exception as e:
+        logger.error(f"Failed to save lookup: {e}")
 
-    # Log to channel
+    # Log to channel (with error handling)
     log_text = f"User: {update.effective_user.id}\nQuery: {query}\nCmd: /{cmd}\n\n{json.dumps(data, indent=2)}"
     if len(log_text) > 4000:
         log_text = log_text[:4000] + "..."
-    await context.bot.send_message(chat_id=cmd_info["log"], text=log_text)
+    try:
+        await context.bot.send_message(chat_id=cmd_info["log"], text=log_text)
+    except Exception as e:
+        logger.error(f"Failed to send log to channel: {e}")
 
 # ==================== MAIN MESSAGE HANDLER ====================
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -177,9 +188,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await force_join_filter(update, context):
         return
 
-    # Update user in DB
+    # Update user in DB (with error handling)
     u = update.effective_user
-    await update_user(u.id, u.username, u.first_name, u.last_name)
+    try:
+        await update_user(u.id, u.username, u.first_name, u.last_name)
+    except Exception as e:
+        logger.error(f"Failed to update user: {e}")
 
     # Parse command
     text = update.message.text
@@ -187,7 +201,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     parts = text.split(maxsplit=1)
-    cmd = parts[0][1:].lower()
+    cmd = parts[0][1:].split('@')[0].lower()   # Remove @botusername
     query = parts[1] if len(parts) > 1 else None
 
     if not query:
@@ -214,25 +228,33 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     elif data.startswith("copy:"):
         uid = data.split(":", 1)[1]
-        if uid in copy_cache:
+        entry = copy_cache.get(uid)
+        if entry and (time.time() - entry["time"]) < CACHE_EXPIRY:
             await query.message.reply_text(
-                f"```json\n{json.dumps(copy_cache[uid]['data'], indent=2)}\n```",
+                f"```json\n{json.dumps(entry['data'], indent=2)}\n```",
                 parse_mode='Markdown'
             )
             del copy_cache[uid]  # one-time use
         else:
+            copy_cache.pop(uid, None)  # clean expired
             await query.message.reply_text("❌ Copy data expired. Please run the command again.")
     elif data.startswith("search:"):
         cmd = data.split(":", 1)[1]
         await query.message.reply_text(f"Send /{cmd} with your query.")
 
 # ==================== ADMIN COMMANDS ====================
-async def admin_only(func):
+def admin_only(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         if user.id == OWNER_ID or await is_admin(user.id):
             return await func(update, context)
         await update.message.reply_text("❌ This command is for admins only.")
+    return wrapper
+
+def owner_only(func):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id == OWNER_ID:
+            return await func(update, context)
     return wrapper
 
 @admin_only
@@ -416,12 +438,6 @@ async def lookup_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 # ==================== OWNER COMMANDS ====================
-async def owner_only(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id == OWNER_ID:
-            return await func(update, context)
-    return wrapper
-
 @owner_only
 async def add_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -465,41 +481,44 @@ async def post_init(app: Application):
 
 def run_bot():
     """Run the Telegram bot in a separate thread."""
-    if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        logger.error("❌ BOT_TOKEN not set! Please set it in Render environment variables.")
-        return
+    try:
+        if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+            logger.error("❌ BOT_TOKEN not set! Please set it in Render environment variables.")
+            return
 
-    bot_app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+        bot_app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
-    # Register all handlers
-    bot_app.add_handler(CommandHandler("broadcast", broadcast))
-    bot_app.add_handler(CommandHandler("dm", dm_user))
-    bot_app.add_handler(CommandHandler("ban", ban))
-    bot_app.add_handler(CommandHandler("unban", unban))
-    bot_app.add_handler(CommandHandler("deleteuser", delete_user))
-    bot_app.add_handler(CommandHandler("searchuser", search_user))
-    bot_app.add_handler(CommandHandler("users", users))
-    bot_app.add_handler(CommandHandler("recentusers", recent_users))
-    bot_app.add_handler(CommandHandler("inactiveusers", inactive_users))
-    bot_app.add_handler(CommandHandler("userlookups", user_lookups))
-    bot_app.add_handler(CommandHandler("leaderboard", leaderboard))
-    bot_app.add_handler(CommandHandler("stats", stats))
-    bot_app.add_handler(CommandHandler("dailystats", daily_stats))
-    bot_app.add_handler(CommandHandler("lookupstats", lookup_stats))
+        # Register all handlers
+        bot_app.add_handler(CommandHandler("broadcast", broadcast))
+        bot_app.add_handler(CommandHandler("dm", dm_user))
+        bot_app.add_handler(CommandHandler("ban", ban))
+        bot_app.add_handler(CommandHandler("unban", unban))
+        bot_app.add_handler(CommandHandler("deleteuser", delete_user))
+        bot_app.add_handler(CommandHandler("searchuser", search_user))
+        bot_app.add_handler(CommandHandler("users", users))
+        bot_app.add_handler(CommandHandler("recentusers", recent_users))
+        bot_app.add_handler(CommandHandler("inactiveusers", inactive_users))
+        bot_app.add_handler(CommandHandler("userlookups", user_lookups))
+        bot_app.add_handler(CommandHandler("leaderboard", leaderboard))
+        bot_app.add_handler(CommandHandler("stats", stats))
+        bot_app.add_handler(CommandHandler("dailystats", daily_stats))
+        bot_app.add_handler(CommandHandler("lookupstats", lookup_stats))
 
-    # Owner-only
-    bot_app.add_handler(CommandHandler("addadmin", add_admin_cmd))
-    bot_app.add_handler(CommandHandler("removeadmin", remove_admin_cmd))
-    bot_app.add_handler(CommandHandler("listadmins", list_admins))
-    bot_app.add_handler(CommandHandler("settings", settings))
-    bot_app.add_handler(CommandHandler("fulldbbackup", full_db_backup))
+        # Owner-only
+        bot_app.add_handler(CommandHandler("addadmin", add_admin_cmd))
+        bot_app.add_handler(CommandHandler("removeadmin", remove_admin_cmd))
+        bot_app.add_handler(CommandHandler("listadmins", list_admins))
+        bot_app.add_handler(CommandHandler("settings", settings))
+        bot_app.add_handler(CommandHandler("fulldbbackup", full_db_backup))
 
-    # Main command handler (dynamic)
-    bot_app.add_handler(MessageHandler(filters.COMMAND, message_handler))
-    bot_app.add_handler(CallbackQueryHandler(callback_handler))
+        # Main command handler (dynamic)
+        bot_app.add_handler(MessageHandler(filters.COMMAND, message_handler))
+        bot_app.add_handler(CallbackQueryHandler(callback_handler))
 
-    logger.info("🚀 Bot polling started...")
-    bot_app.run_polling()
+        logger.info("🚀 Bot polling started...")
+        bot_app.run_polling()
+    except Exception as e:
+        logger.exception(f"Bot thread crashed: {e}")
 
 # ==================== FLASK WEB SERVER ====================
 @flask_app.route('/')
