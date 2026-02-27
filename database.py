@@ -2,7 +2,7 @@
 
 import aiosqlite
 import json
-from datetime import datetime, timedelta  # FIXED: added timedelta
+from datetime import datetime
 
 DB_PATH = "osint_bot.db"
 
