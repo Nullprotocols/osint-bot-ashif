@@ -2,9 +2,9 @@
 
 import aiosqlite
 import json
-from datetime import datetime
+from datetime import datetime, timedelta   # timedelta अब इम्पोर्ट किया गया है
 
-DB_PATH = "osint_bot.db"
+DB_PATH = "osint_bot.db"   # अगर Persistent Disk use kar rahe ho to path change karein
 
 async def init_db():
     """Initialize all database tables."""
