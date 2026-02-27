@@ -10,15 +10,14 @@ import asyncio
 import logging
 import threading
 import aiohttp
+import aiosqlite
 from datetime import datetime, timedelta
 from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Updater, CommandHandler, MessageHandler,
-    CallbackQueryHandler, CallbackContext
+    CallbackQueryHandler, CallbackContext, Filters
 )
-from telegram.utils.helpers import mention_html
-import aiosqlite
 
 # Import config and database
 from config import *
@@ -227,7 +226,6 @@ async def callback_handler(update: Update, context: CallbackContext):
 
 # ==================== ADMIN COMMANDS ====================
 def admin_only(func):
-    """Decorator to check admin rights (sync version for v13.15)."""
     async def wrapper(update: Update, context: CallbackContext):
         user = update.effective_user
         if user.id == OWNER_ID or await is_admin(user.id):
@@ -457,9 +455,7 @@ async def full_db_backup(update: Update, context: CallbackContext):
 
 # ==================== BOT INITIALIZATION ====================
 def init_bot():
-    """Initialize database and add initial admins (called before starting)."""
-    # Since we can't use async in a thread directly, we'll run it synchronously.
-    # But we need asyncio to run the async functions. We'll create a new event loop.
+    """Initialize database and add initial admins (synchronous wrapper)."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(init_db())
@@ -474,7 +470,7 @@ def run_bot():
         logger.error("❌ BOT_TOKEN not set! Please set it in Render environment variables.")
         return
 
-    # Initialize DB and admins synchronously before starting
+    # Initialize DB and admins
     init_bot()
 
     # Create Updater
@@ -505,9 +501,7 @@ def run_bot():
     dp.add_handler(CommandHandler("fulldbbackup", full_db_backup))
 
     # Main command handler (dynamic) – catches all commands not handled above
-    # Note: In v13.15, MessageHandler with Filters.command captures all commands,
-    # but we want it after specific commands. So we add it last.
-    dp.add_handler(MessageHandler(filters=Filters.command, callback=message_handler))
+    dp.add_handler(MessageHandler(Filters.command, message_handler))
 
     # Callback query handler
     dp.add_handler(CallbackQueryHandler(callback_handler))
@@ -538,7 +532,6 @@ def main():
     if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
         logger.error("❌ BOT_TOKEN not set! Please add it in Render environment variables.")
         logger.error("Bot will not start until token is configured.")
-        # Still run Flask to show health check but bot won't work
     
     # Start bot in background thread (only if token is set)
     if BOT_TOKEN and BOT_TOKEN != "YOUR_BOT_TOKEN_HERE":
