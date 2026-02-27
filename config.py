@@ -3,12 +3,11 @@
 import os
 
 # ==================== BOT TOKEN ====================
-# Render ke environment variable se lega, nahi to placeholder
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 
 # ==================== OWNER & ADMINS ====================
-OWNER_ID = 8104850843  # Owner ka Telegram user ID
-INITIAL_ADMINS = [8104850843, 5987905091]  # Ye DB me automatically add honge
+OWNER_ID = 8104850843
+INITIAL_ADMINS = [8104850843, 5987905091]
 
 # ==================== FORCE JOIN CHANNELS ====================
 FORCE_JOIN_CHANNELS = [
@@ -16,7 +15,7 @@ FORCE_JOIN_CHANNELS = [
     {"name": "OSINT Lookup", "link": "https://t.me/osint_lookup", "id": -1003698567122}
 ]
 
-# ==================== LOG CHANNELS (per command) ====================
+# ==================== LOG CHANNELS ====================
 LOG_CHANNELS = {
     "num": -1003482423742,
     "ifsc": -1003624886596,
@@ -36,28 +35,20 @@ LOG_CHANNELS = {
     "tginfopro": -1003643170105,
 }
 
-# ==================== GLOBAL BRANDING BLACKLIST ====================
+# ==================== GLOBAL BLACKLIST ====================
 GLOBAL_BLACKLIST = [
-    "@patelkrish_99",
-    "patelkrish_99",
-    "t.me/anshapi",
-    "anshapi",
-    "@Kon_Hu_Mai",
-    "Kon_Hu_Mai",
-    "Dm to buy access",
-    "Dm to buy access"
+    "@patelkrish_99", "patelkrish_99", "t.me/anshapi", "anshapi",
+    "@Kon_Hu_Mai", "Kon_Hu_Mai", "Dm to buy access", "Dm to buy access"
 ]
 
-# ==================== COMMANDS (DYNAMIC ROUTER) ====================
+# ==================== COMMANDS ====================
 COMMANDS = {
     "num": {
         "url": "https://num-free-rootx-jai-shree-ram-14-day.vercel.app/?key=lundkinger&number={}",
         "param": "number",
         "log": LOG_CHANNELS["num"],
         "extra_blacklist": [
-            "dm to buy",
-            "owner",
-            "@kon_hu_mai",
+            "dm to buy", "owner", "@kon_hu_mai",
             "Ruk ja bhencho itne m kya unlimited request lega?? Paid lena h to bolo 100-400₹ @Simpleguy444"
         ]
     },
@@ -65,17 +56,7 @@ COMMANDS = {
         "url": "https://tg2num-owner-api.vercel.app/?userid={}",
         "param": "userid",
         "log": LOG_CHANNELS["tg2num"],
-        "extra_blacklist": [
-            "code",
-            "validity",
-            "hours_remaining",
-            "days_remaining",
-            "expires_on",
-            "https://t.me/AbdulBotzOfficial",
-            "AbdulDevStoreBot",
-            "@AbdulDevStoreBot",
-            "credit"
-        ]
+        "extra_blacklist": []
     },
     "vehicle": {
         "url": "https://vehicle-info-aco-api.vercel.app/info?vehicle={}",
