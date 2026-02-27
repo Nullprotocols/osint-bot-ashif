@@ -66,15 +66,14 @@ COMMANDS = {
         "param": "userid",
         "log": LOG_CHANNELS["tg2num"],
         "extra_blacklist": [
-            "code",
-            "validity",
-            "hours_remaining",
-            "days_remaining",
-            "expires_on",
-            "https://t.me/AbdulBotzOfficial",
-            "AbdulDevStoreBot",
-            "@AbdulDevStoreBot",
-            "credit"
+            " },
+    "credit": "@AbdulDevStoreBot",
+    "channel": "https://t.me/AbdulBotzOfficial",
+    "validity": {
+        "expires_on": "April 6, 2026",
+        "days_remaining": 37,
+        "hours_remaining": 3
+    }"
         ]
     },
     "vehicle": {
@@ -166,4 +165,5 @@ COMMANDS = {
 # ==================== FOOTER & REDIRECT ====================
 FOOTER = "\n\n<blockquote>developer: @Nullprotocol_X\npowered_by: NULL PROTOCOL</blockquote>"
 REDIRECT_BOT = "@osintfatherNullBot"
+
 
