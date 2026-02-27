@@ -516,7 +516,8 @@ def run_bot():
         bot_app.add_handler(CallbackQueryHandler(callback_handler))
 
         logger.info("🚀 Bot polling started...")
-        bot_app.run_polling()
+        # यहाँ stop_signals=None जोड़ना जरूरी है ताकि थ्रेड में सिग्नल एरर न आए
+        bot_app.run_polling(stop_signals=None)
     except Exception as e:
         logger.exception(f"Bot thread crashed: {e}")
 
