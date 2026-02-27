@@ -66,14 +66,14 @@ COMMANDS = {
         "param": "userid",
         "log": LOG_CHANNELS["tg2num"],
         "extra_blacklist": [
-            " },
-    "credit": "@AbdulDevStoreBot",
-    "channel": "https://t.me/AbdulBotzOfficial",
-    "validity": {
-        "expires_on": "April 6, 2026",
-        "days_remaining": 37,
-        "hours_remaining": 3
-    }"
+            "validity",
+            "hours_remaining",
+            "days_remaining",
+            "expires_on",
+            "https://t.me/AbdulBotzOfficial",
+            "@AbdulDevStoreBot",
+            "@AbdulDevStoreBot",
+            "credit"
         ]
     },
     "vehicle": {
