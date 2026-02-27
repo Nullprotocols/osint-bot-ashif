@@ -7,8 +7,8 @@ import os
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 
 # ==================== OWNER & ADMINS ====================
-OWNER_ID = 8104850843  # Owner ka Telegram user ID
-INITIAL_ADMINS = [8104850843, 5987905091]  # Ye DB me automatically add honge
+OWNER_ID = 8104850849  # Owner ka Telegram user ID
+INITIAL_ADMINS = [8104850849, 5987905091]  # Ye DB me automatically add honge
 
 # ==================== FORCE JOIN CHANNELS ====================
 FORCE_JOIN_CHANNELS = [
@@ -166,3 +166,4 @@ COMMANDS = {
 # ==================== FOOTER & REDIRECT ====================
 FOOTER = "\n\n<blockquote>developer: @Nullprotocol_X\npowered_by: NULL PROTOCOL</blockquote>"
 REDIRECT_BOT = "@osintfatherNullBot"
+
