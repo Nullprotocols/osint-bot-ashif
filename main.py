@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# main.py - Complete OSINT Pro Bot with Flask for Render Web Service
+# main.py - OSINT Pro Bot (python-telegram-bot v13.15) with Flask for Render
 
 import os
 import sys
@@ -14,9 +14,11 @@ from datetime import datetime, timedelta
 from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, 
-    filters, ContextTypes, CallbackQueryHandler
+    Updater, CommandHandler, MessageHandler,
+    CallbackQueryHandler, CallbackContext
 )
+from telegram.utils.helpers import mention_html
+import aiosqlite
 
 # Import config and database
 from config import *
@@ -44,7 +46,6 @@ def clean_branding(text, extra_blacklist=None):
         blacklist.extend(extra_blacklist)
     for item in blacklist:
         text = re.sub(re.escape(item), '', text, flags=re.IGNORECASE)
-    # Clean multiple newlines and spaces
     text = re.sub(r'\n\s*\n', '\n\n', text)
     text = re.sub(r' +', ' ', text)
     return text.strip()
@@ -69,7 +70,6 @@ async def call_api(url):
 def format_output(data):
     """Convert data to pretty JSON inside HTML <pre> tags, add footer."""
     pretty = json.dumps(data, indent=2, ensure_ascii=False)
-    # Escape HTML characters
     pretty = pretty.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     return f"<pre>{pretty}</pre>{FOOTER}"
 
@@ -82,7 +82,7 @@ async def check_force_join(bot, user_id):
             if member.status in ['left', 'kicked']:
                 missing.append(ch)
         except Exception:
-            missing.append(ch)  # if bot can't check, assume not joined
+            missing.append(ch)
     return len(missing) == 0, missing
 
 def get_force_join_keyboard(missing):
@@ -94,7 +94,6 @@ def get_force_join_keyboard(missing):
     return InlineKeyboardMarkup(keyboard)
 
 def store_copy_data(data):
-    """Store data in cache and return unique ID."""
     uid = str(uuid.uuid4())
     copy_cache[uid] = {"data": data, "time": datetime.now().timestamp()}
     return uid
@@ -106,7 +105,7 @@ def get_search_button(cmd):
     return InlineKeyboardButton("🔍 Search", callback_data=f"search:{cmd}")
 
 # ==================== FILTERS ====================
-async def group_only(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+async def group_only(update: Update, context: CallbackContext) -> bool:
     """Allow only groups; private messages redirected unless admin/owner."""
     if update.effective_chat.type == "private":
         user_id = update.effective_user.id
@@ -118,7 +117,7 @@ async def group_only(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool
         return False
     return True
 
-async def force_join_filter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+async def force_join_filter(update: Update, context: CallbackContext) -> bool:
     """Check force join (admins/owner bypass)."""
     user = update.effective_user
     if not user:
@@ -138,7 +137,7 @@ async def force_join_filter(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return True
 
 # ==================== COMMAND HANDLER ====================
-async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: str, query: str):
+async def handle_command(update: Update, context: CallbackContext, cmd: str, query: str):
     """Execute a command by calling its API."""
     cmd_info = COMMANDS.get(cmd)
     if not cmd_info:
@@ -169,7 +168,7 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE, cmd
     await context.bot.send_message(chat_id=cmd_info["log"], text=log_text)
 
 # ==================== MAIN MESSAGE HANDLER ====================
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def message_handler(update: Update, context: CallbackContext):
     """Entry point for all messages."""
     # Apply filters
     if not await group_only(update, context):
@@ -198,7 +197,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await handle_command(update, context, cmd, query)
 
 # ==================== CALLBACK HANDLER ====================
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def callback_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -227,8 +226,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(f"Send /{cmd} with your query.")
 
 # ==================== ADMIN COMMANDS ====================
-async def admin_only(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def admin_only(func):
+    """Decorator to check admin rights (sync version for v13.15)."""
+    async def wrapper(update: Update, context: CallbackContext):
         user = update.effective_user
         if user.id == OWNER_ID or await is_admin(user.id):
             return await func(update, context)
@@ -236,7 +236,7 @@ async def admin_only(func):
     return wrapper
 
 @admin_only
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def broadcast(update: Update, context: CallbackContext):
     """Broadcast text message to all users."""
     if not context.args:
         return await update.message.reply_text("Usage: /broadcast <message>")
@@ -254,7 +254,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Success: {success}\n❌ Fail: {fail}")
 
 @admin_only
-async def dm_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def dm_user(update: Update, context: CallbackContext):
     """Send direct message to a user."""
     try:
         uid = int(context.args[0])
@@ -265,7 +265,7 @@ async def dm_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /dm <user_id> <message>")
 
 @admin_only
-async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ban(update: Update, context: CallbackContext):
     try:
         uid = int(context.args[0])
         reason = ' '.join(context.args[1:]) if len(context.args) > 1 else "No reason"
@@ -275,7 +275,7 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /ban <user_id> [reason]")
 
 @admin_only
-async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def unban(update: Update, context: CallbackContext):
     try:
         uid = int(context.args[0])
         await unban_user(uid)
@@ -284,7 +284,7 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /unban <user_id>")
 
 @admin_only
-async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def delete_user(update: Update, context: CallbackContext):
     """Delete user from database."""
     try:
         uid = int(context.args[0])
@@ -296,7 +296,7 @@ async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /deleteuser <user_id>")
 
 @admin_only
-async def search_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def search_user(update: Update, context: CallbackContext):
     """Search user by ID, username, or name."""
     if not context.args:
         return await update.message.reply_text("Usage: /searchuser <query>")
@@ -331,7 +331,7 @@ async def search_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 @admin_only
-async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def users(update: Update, context: CallbackContext):
     """List users with pagination."""
     page = int(context.args[0]) if context.args else 1
     per_page = 10
@@ -346,7 +346,7 @@ async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 @admin_only
-async def recent_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def recent_users(update: Update, context: CallbackContext):
     """List users active in last N days."""
     days = int(context.args[0]) if context.args else 7
     users_list = await get_recent_users(days)
@@ -356,7 +356,7 @@ async def recent_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 @admin_only
-async def inactive_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def inactive_users(update: Update, context: CallbackContext):
     """List users inactive for more than N days."""
     days = int(context.args[0]) if context.args else 30
     users_list = await get_inactive_users(days)
@@ -366,7 +366,7 @@ async def inactive_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 @admin_only
-async def user_lookups(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def user_lookups(update: Update, context: CallbackContext):
     try:
         uid = int(context.args[0])
         lookups = await get_user_lookups(uid, 10)
@@ -378,7 +378,7 @@ async def user_lookups(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /userlookups <user_id>")
 
 @admin_only
-async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def leaderboard(update: Update, context: CallbackContext):
     board = await get_leaderboard(10)
     text = "🏆 Leaderboard (Top 10):\n"
     for i, (uid, count) in enumerate(board, 1):
@@ -386,7 +386,7 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 @admin_only
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats(update: Update, context: CallbackContext):
     stats_data = await get_stats()
     text = f"📈 Bot Statistics:\n"
     text += f"Total Users: {stats_data['total_users']}\n"
@@ -396,7 +396,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 @admin_only
-async def daily_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def daily_stats(update: Update, context: CallbackContext):
     days = int(context.args[0]) if context.args else 7
     stats_list = await get_daily_stats(days)
     if not stats_list:
@@ -408,7 +408,7 @@ async def daily_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 @admin_only
-async def lookup_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def lookup_stats(update: Update, context: CallbackContext):
     stats_list = await get_lookup_stats(10)
     text = "🔍 Lookup Stats (Top 10 commands):\n"
     for cmd, cnt in stats_list:
@@ -416,14 +416,14 @@ async def lookup_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 # ==================== OWNER COMMANDS ====================
-async def owner_only(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def owner_only(func):
+    async def wrapper(update: Update, context: CallbackContext):
         if update.effective_user.id == OWNER_ID:
             return await func(update, context)
     return wrapper
 
 @owner_only
-async def add_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def add_admin_cmd(update: Update, context: CallbackContext):
     try:
         uid = int(context.args[0])
         await add_admin(uid, OWNER_ID)
@@ -432,7 +432,7 @@ async def add_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /addadmin <user_id>")
 
 @owner_only
-async def remove_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def remove_admin_cmd(update: Update, context: CallbackContext):
     try:
         uid = int(context.args[0])
         await remove_admin(uid)
@@ -441,65 +441,81 @@ async def remove_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /removeadmin <user_id>")
 
 @owner_only
-async def list_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def list_admins(update: Update, context: CallbackContext):
     admins = await get_all_admins()
     text = "👑 Admins:\n" + "\n".join(str(a) for a in admins)
     await update.message.reply_text(text)
 
 @owner_only
-async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Placeholder for settings command (can be extended)."""
+async def settings(update: Update, context: CallbackContext):
     await update.message.reply_text("Settings command - under development.")
 
 @owner_only
-async def full_db_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def full_db_backup(update: Update, context: CallbackContext):
     with open(DB_PATH, 'rb') as f:
         await update.message.reply_document(f, filename='osint_bot_backup.db')
 
 # ==================== BOT INITIALIZATION ====================
-async def post_init(app: Application):
-    await init_db()
+def init_bot():
+    """Initialize database and add initial admins (called before starting)."""
+    # Since we can't use async in a thread directly, we'll run it synchronously.
+    # But we need asyncio to run the async functions. We'll create a new event loop.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(init_db())
     for aid in INITIAL_ADMINS:
-        await add_admin(aid, OWNER_ID)
-    logger.info("✅ Bot initialized, database ready.")
+        loop.run_until_complete(add_admin(aid, OWNER_ID))
+    loop.close()
+    logger.info("✅ Database initialized, admins added.")
 
 def run_bot():
-    """Run the Telegram bot in a separate thread."""
+    """Run the Telegram bot using Updater (v13.15)."""
     if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
         logger.error("❌ BOT_TOKEN not set! Please set it in Render environment variables.")
         return
 
-    bot_app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    # Initialize DB and admins synchronously before starting
+    init_bot()
+
+    # Create Updater
+    updater = Updater(token=BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
 
     # Register all handlers
-    bot_app.add_handler(CommandHandler("broadcast", broadcast))
-    bot_app.add_handler(CommandHandler("dm", dm_user))
-    bot_app.add_handler(CommandHandler("ban", ban))
-    bot_app.add_handler(CommandHandler("unban", unban))
-    bot_app.add_handler(CommandHandler("deleteuser", delete_user))
-    bot_app.add_handler(CommandHandler("searchuser", search_user))
-    bot_app.add_handler(CommandHandler("users", users))
-    bot_app.add_handler(CommandHandler("recentusers", recent_users))
-    bot_app.add_handler(CommandHandler("inactiveusers", inactive_users))
-    bot_app.add_handler(CommandHandler("userlookups", user_lookups))
-    bot_app.add_handler(CommandHandler("leaderboard", leaderboard))
-    bot_app.add_handler(CommandHandler("stats", stats))
-    bot_app.add_handler(CommandHandler("dailystats", daily_stats))
-    bot_app.add_handler(CommandHandler("lookupstats", lookup_stats))
+    dp.add_handler(CommandHandler("broadcast", broadcast))
+    dp.add_handler(CommandHandler("dm", dm_user))
+    dp.add_handler(CommandHandler("ban", ban))
+    dp.add_handler(CommandHandler("unban", unban))
+    dp.add_handler(CommandHandler("deleteuser", delete_user))
+    dp.add_handler(CommandHandler("searchuser", search_user))
+    dp.add_handler(CommandHandler("users", users))
+    dp.add_handler(CommandHandler("recentusers", recent_users))
+    dp.add_handler(CommandHandler("inactiveusers", inactive_users))
+    dp.add_handler(CommandHandler("userlookups", user_lookups))
+    dp.add_handler(CommandHandler("leaderboard", leaderboard))
+    dp.add_handler(CommandHandler("stats", stats))
+    dp.add_handler(CommandHandler("dailystats", daily_stats))
+    dp.add_handler(CommandHandler("lookupstats", lookup_stats))
 
     # Owner-only
-    bot_app.add_handler(CommandHandler("addadmin", add_admin_cmd))
-    bot_app.add_handler(CommandHandler("removeadmin", remove_admin_cmd))
-    bot_app.add_handler(CommandHandler("listadmins", list_admins))
-    bot_app.add_handler(CommandHandler("settings", settings))
-    bot_app.add_handler(CommandHandler("fulldbbackup", full_db_backup))
+    dp.add_handler(CommandHandler("addadmin", add_admin_cmd))
+    dp.add_handler(CommandHandler("removeadmin", remove_admin_cmd))
+    dp.add_handler(CommandHandler("listadmins", list_admins))
+    dp.add_handler(CommandHandler("settings", settings))
+    dp.add_handler(CommandHandler("fulldbbackup", full_db_backup))
 
-    # Main command handler (dynamic)
-    bot_app.add_handler(MessageHandler(filters.COMMAND, message_handler))
-    bot_app.add_handler(CallbackQueryHandler(callback_handler))
+    # Main command handler (dynamic) – catches all commands not handled above
+    # Note: In v13.15, MessageHandler with Filters.command captures all commands,
+    # but we want it after specific commands. So we add it last.
+    dp.add_handler(MessageHandler(filters=Filters.command, callback=message_handler))
 
+    # Callback query handler
+    dp.add_handler(CallbackQueryHandler(callback_handler))
+
+    # Start polling
     logger.info("🚀 Bot polling started...")
-    bot_app.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 # ==================== FLASK WEB SERVER ====================
 @flask_app.route('/')
