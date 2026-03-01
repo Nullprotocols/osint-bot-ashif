@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# main.py - Complete OSINT Pro Bot with Flask for Render Web Service
+# main.py - OSINT Pro Bot with all features (fixed file send, tg2num, logging)
 
 import os
 import sys
@@ -11,14 +11,16 @@ import asyncio
 import logging
 import threading
 import html
+import aiosqlite
 import aiohttp
 from datetime import datetime
 from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, 
-    filters, ContextTypes, CallbackQueryHandler
+    Application, CommandHandler, MessageHandler, ChatMemberHandler,
+    filters, ContextTypes, CallbackQueryHandler, ConversationHandler
 )
+from telegram.constants import ParseMode
 
 # Import config and database
 from config import *
@@ -31,15 +33,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Flask app for Render health checks
 flask_app = Flask(__name__)
 
+# ==================== CONVERSATION STATES ====================
+WAITING_MESSAGE = 1
+
 # ==================== UTILITY FUNCTIONS ====================
-CACHE_EXPIRY = 300  # 5 minutes
-copy_cache = {}  # {uid: {"data": data, "time": timestamp}}
+CACHE_EXPIRY = 300
+copy_cache = {}
 
 def clean_branding(text, extra_blacklist=None):
-    """Remove all blacklisted strings from text (case-insensitive)."""
     if not text:
         return text
     blacklist = GLOBAL_BLACKLIST.copy()
@@ -47,16 +50,14 @@ def clean_branding(text, extra_blacklist=None):
         blacklist.extend(extra_blacklist)
     for item in blacklist:
         text = re.sub(re.escape(item), '', text, flags=re.IGNORECASE)
-    # Clean multiple newlines and spaces
     text = re.sub(r'\n\s*\n', '\n\n', text)
     text = re.sub(r' +', ' ', text)
     return text.strip()
 
 async def call_api(url):
-    """Async HTTP GET request with timeout."""
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.get(url, timeout=10) as resp:
+            async with session.get(url, timeout=20) as resp:
                 if resp.status == 200:
                     try:
                         return await resp.json()
@@ -69,15 +70,7 @@ async def call_api(url):
         except Exception as e:
             return {"error": str(e)}
 
-def format_output(data):
-    """Convert data to pretty JSON inside HTML <pre> tags, add footer."""
-    pretty = json.dumps(data, indent=2, ensure_ascii=False)
-    # Escape HTML characters
-    pretty = pretty.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    return f"<pre>{pretty}</pre>{FOOTER}"
-
 async def check_force_join(bot, user_id):
-    """Check if user has joined all required channels."""
     missing = []
     for ch in FORCE_JOIN_CHANNELS:
         try:
@@ -85,11 +78,10 @@ async def check_force_join(bot, user_id):
             if member.status in ['left', 'kicked']:
                 missing.append(ch)
         except Exception:
-            missing.append(ch)  # if bot can't check, assume not joined
+            missing.append(ch)
     return len(missing) == 0, missing
 
 def get_force_join_keyboard(missing):
-    """Create inline keyboard with join buttons and verify button."""
     keyboard = []
     for ch in missing:
         keyboard.append([InlineKeyboardButton(f"Join {ch['name']}", url=ch['link'])])
@@ -97,7 +89,6 @@ def get_force_join_keyboard(missing):
     return InlineKeyboardMarkup(keyboard)
 
 def store_copy_data(data):
-    """Store data in cache and return unique ID."""
     uid = str(uuid.uuid4())
     copy_cache[uid] = {"data": data, "time": time.time()}
     return uid
@@ -108,105 +99,311 @@ def get_copy_button(data):
 def get_search_button(cmd):
     return InlineKeyboardButton("🔍 Search", callback_data=f"search:{cmd}")
 
+# ==================== COMMAND LIST GENERATORS ====================
+def get_commands_list():
+    lines = ["📋 **AVAILABLE COMMANDS**", "────────────────────────────"]
+    for cmd, info in COMMANDS.items():
+        lines.append(f"• `/{cmd} [{info['param']}]` → {info['desc']}")
+    lines.append(CMD_LIST_FOOTER)
+    return "\n".join(lines)
+
+def get_admin_commands_list():
+    admin_cmds = [
+        "`/broadcast` - Send a message to all users (two-step)",
+        "`/dm <user_id>` - DM to one user (two-step)",
+        "`/bulkdm <id1> <id2> ...` - Bulk DM (two-step)",
+        "`/ban <user_id> [reason]` - Ban a user",
+        "`/unban <user_id>` - Unban a user",
+        "`/deleteuser <user_id>` - Delete user from DB",
+        "`/searchuser <query>` - Search users",
+        "`/users [page]` - List users",
+        "`/recentusers [days]` - Recently active users",
+        "`/inactiveusers [days]` - Inactive users",
+        "`/userlookups <user_id>` - User's last lookups",
+        "`/leaderboard` - Top users",
+        "`/stats` - Bot statistics",
+        "`/dailystats [days]` - Daily stats",
+        "`/lookupstats` - Command usage stats",
+        "`/addadmin <user_id>` (owner only)",
+        "`/removeadmin <user_id>` (owner only)",
+        "`/listadmins` - List all admins",
+        "`/settings` - Bot settings (WIP)",
+        "`/fulldbbackup` - Download database backup",
+        "`/group` - List groups where bot is admin"
+    ]
+    lines = ["👑 **ADMIN COMMANDS**", "────────────────────────────"]
+    lines.extend(admin_cmds)
+    lines.append(CMD_LIST_FOOTER)
+    return "\n".join(lines)
+
 # ==================== FILTERS ====================
 async def group_only(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Allow only groups; private messages redirected unless admin/owner."""
     if update.effective_chat.type == "private":
+        if update.message and update.message.text:
+            text = update.message.text.strip()
+            if text.startswith('/start') or text.startswith('/help') or text.startswith('/admin'):
+                return True
         user_id = update.effective_user.id
         if user_id == OWNER_ID or await is_admin(user_id):
             return True
         await update.message.reply_text(
-            f"Ye bot sirf group me kaam karta hai.\nPersonal use ke liye use kare: {REDIRECT_BOT}"
+            f"⚠️ **Ye bot sirf group me kaam karta hai.**\nPersonal use ke liye use kare: {REDIRECT_BOT}",
+            parse_mode=ParseMode.MARKDOWN
         )
         return False
     return True
 
 async def force_join_filter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check force join (admins/owner bypass)."""
     user = update.effective_user
     if not user:
         return True
     if user.id == OWNER_ID or await is_admin(user.id):
         return True
     if await is_banned(user.id):
-        await update.message.reply_text("❌ Aap banned hain. Contact admin.")
+        await update.message.reply_text("❌ **Aap banned hain. Contact admin.**", parse_mode=ParseMode.MARKDOWN)
         return False
     ok, missing = await check_force_join(context.bot, user.id)
     if not ok:
         await update.message.reply_text(
-            "⚠️ Bot use karne ke liye ye channels join karo:",
-            reply_markup=get_force_join_keyboard(missing)
+            "⚠️ **Bot use karne ke liye ye channels join karo:**",
+            reply_markup=get_force_join_keyboard(missing),
+            parse_mode=ParseMode.MARKDOWN
         )
         return False
     return True
 
-# ==================== COMMAND HANDLER ====================
+# ==================== START & HELP HANDLERS ====================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    try:
+        await update_user(user.id, user.username, user.first_name, user.last_name)
+    except Exception as e:
+        logger.error(f"Failed to update user: {e}")
+    if not await force_join_filter(update, context):
+        return
+    welcome = f"👋 **Welcome {user.first_name}!**\n\n" + get_commands_list()
+    await update.message.reply_text(welcome, parse_mode=ParseMode.MARKDOWN)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    try:
+        await update_user(user.id, user.username, user.first_name, user.last_name)
+    except Exception as e:
+        logger.error(f"Failed to update user: {e}")
+    if not await force_join_filter(update, context):
+        return
+    await update.message.reply_text(get_commands_list(), parse_mode=ParseMode.MARKDOWN)
+
+async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id != OWNER_ID and not await is_admin(user.id):
+        await update.message.reply_text("❌ **This command is for admins only.**", parse_mode=ParseMode.MARKDOWN)
+        return
+    await update.message.reply_text(get_admin_commands_list(), parse_mode=ParseMode.MARKDOWN)
+
+# ==================== COMMAND HANDLER (with branding, log, long output as file) ====================
 async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE, cmd: str, query: str):
-    """Execute a command by calling its API."""
     cmd_info = COMMANDS.get(cmd)
     if not cmd_info:
         await update.message.reply_text("❌ Command not found.")
         return
 
+    # ========== SPECIAL HANDLING FOR tg2num (REMOVED: username resolve) ==========
+    # Ab tg2num sirf numeric user ID accept karega.
+
     url = cmd_info["url"].format(query)
+    logger.info(f"🔗 API Call: {url}")
     data = await call_api(url)
 
-    # Clean branding
+    # ========== REMOVE UNWANTED FIELDS FOR tg2num ==========
+    if cmd == 'tg2num' and isinstance(data, dict):
+        keys_to_remove = ["credit", "channel", "validity"]
+        for key in keys_to_remove:
+            data.pop(key, None)
+
+    # Add branding to the JSON data
+    if isinstance(data, dict):
+        data["developer"] = BRANDING["developer"]
+        data["powered_by"] = BRANDING["powered_by"]
+    elif isinstance(data, list):
+        data = {
+            "result": data,
+            "developer": BRANDING["developer"],
+            "powered_by": BRANDING["powered_by"]
+        }
+    else:
+        data = {
+            "result": data,
+            "developer": BRANDING["developer"],
+            "powered_by": BRANDING["powered_by"]
+        }
+
+    # Clean branding from original API response
     json_str = json.dumps(data, indent=2, ensure_ascii=False)
     cleaned = clean_branding(json_str, cmd_info.get("extra_blacklist", []))
-    # Escape HTML
     cleaned_escaped = html.escape(cleaned)
 
-    # Prepare output
-    output_html = f"<pre>{cleaned_escaped}</pre>{FOOTER}"
-    keyboard = [[get_copy_button(data), get_search_button(cmd)]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    # Footer with HTML bold tags
+    extra_footer = "\n\n━━━━━━━━━━━━━━━━━━━━\n👨‍💻 <b>Developer:</b> @Nullprotocol_X\n⚡ <b>Powered by:</b> NULL PROTOCOL"
 
-    await update.message.reply_text(output_html, parse_mode='HTML', reply_markup=reply_markup)
+    # Prepare final HTML message for user
+    output_html = f"<pre>{cleaned_escaped}</pre>{extra_footer}"
 
-    # Save to DB (with error handling)
+    # Check if output is too long
+    is_long = len(output_html) > 4096 or len(cleaned) > 3000
+    log_channel_id = cmd_info.get("log")
+
+    if log_channel_id:
+        logger.info(f"📢 Log channel for /{cmd}: {log_channel_id}")
+    else:
+        logger.error(f"❌ No log channel configured for /{cmd}")
+
+    # ========== HANDLE LONG OUTPUT (FILE) ==========
+    if is_long:
+        filename = f"{cmd}_{query[:50].replace(' ', '_')}.json"
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(cleaned)
+            logger.info(f"✅ File created: {filename}")
+
+            # 1. Send file to user
+            with open(filename, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=filename,
+                    caption=f"📎 Output too long, sent as file.\n\nDeveloper: @Nullprotocol_X\nPowered by: NULL PROTOCOL"
+                )
+            logger.info(f"✅ File sent to user {update.effective_user.id}")
+
+            # 2. Send same file to log channel with user info in caption (using HTML for bold)
+            if log_channel_id:
+                user_info_caption = (
+                    f"👤 <b>User:</b> {update.effective_user.id} (@{update.effective_user.username or 'N/A'})\n"
+                    f"🔍 <b>Command:</b> /{cmd}\n"
+                    f"📝 <b>Query:</b> <code>{query}</code>\n\n"
+                    f"📎 Output too long, sent as file."
+                )
+                try:
+                    with open(filename, 'rb') as f:
+                        await context.bot.send_document(
+                            chat_id=log_channel_id,
+                            document=f,
+                            filename=filename,
+                            caption=user_info_caption,
+                            parse_mode=ParseMode.HTML  # HTML for bold
+                        )
+                    logger.info(f"✅ File sent to log channel {log_channel_id} with HTML")
+                except Exception as e:
+                    logger.error(f"❌ Log channel file send failed (HTML): {e}", exc_info=True)
+                    # Try sending without parse_mode (plain caption)
+                    try:
+                        with open(filename, 'rb') as f:
+                            await context.bot.send_document(
+                                chat_id=log_channel_id,
+                                document=f,
+                                filename=filename,
+                                caption=re.sub(r'<[^>]+>', '', user_info_caption)  # strip HTML tags
+                            )
+                        logger.info(f"✅ File sent to log channel (plain caption) {log_channel_id}")
+                    except Exception as e2:
+                        logger.error(f"❌ Log channel file send even plain failed: {e2}", exc_info=True)
+            else:
+                logger.warning("⚠️ No log channel, skipping file log.")
+
+        except Exception as e:
+            logger.error(f"❌ File handling error: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ File send failed: {e}")
+        finally:
+            if os.path.exists(filename):
+                os.remove(filename)
+                logger.info(f"🗑️ File {filename} removed")
+
+    # ========== HANDLE NORMAL OUTPUT (TEXT) ==========
+    else:
+        # Send to user (HTML format)
+        keyboard = [[get_copy_button(data), get_search_button(cmd)]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(output_html, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        logger.info(f"✅ Text response sent to user {update.effective_user.id}")
+
+        # Send log as text message with syntax highlighting (MarkdownV2)
+        if log_channel_id:
+            # Prepare JSON string for log
+            json_for_log = json.dumps(data, indent=2, ensure_ascii=False)
+            # Escape special characters for MarkdownV2
+            escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+            def escape_md(text):
+                for ch in escape_chars:
+                    text = text.replace(ch, '\\' + ch)
+                return text
+
+            # User info (safe part, no need to escape fully but we'll do basic)
+            user_info = f"👤 *User:* {update.effective_user.id} (@{escape_md(update.effective_user.username or 'N/A')})\n"
+            cmd_line = f"🔍 *Command:* /{cmd}\n"
+            query_line = f"📝 *Query:* `{escape_md(query)}`\n\n"
+            json_block = f"```json\n{json_for_log}\n```"
+
+            log_text = user_info + cmd_line + query_line + json_block
+
+            try:
+                await context.bot.send_message(
+                    chat_id=log_channel_id,
+                    text=log_text,
+                    parse_mode='MarkdownV2'
+                )
+                logger.info(f"✅ Log sent to channel {log_channel_id} with MarkdownV2")
+            except Exception as e:
+                logger.error(f"❌ MarkdownV2 send failed: {e}", exc_info=True)
+                # Fallback to Markdown (legacy)
+                try:
+                    await context.bot.send_message(
+                        chat_id=log_channel_id,
+                        text=log_text,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    logger.info(f"✅ Log sent with legacy Markdown to {log_channel_id}")
+                except Exception as e2:
+                    logger.error(f"❌ Legacy Markdown also failed: {e2}", exc_info=True)
+                    # Final fallback: plain text
+                    try:
+                        plain_text = re.sub(r'[*_`\\[\\]]', '', log_text)
+                        await context.bot.send_message(chat_id=log_channel_id, text=plain_text)
+                        logger.info(f"✅ Plain text log sent to {log_channel_id}")
+                    except Exception as e3:
+                        logger.error(f"❌ Plain text also failed: {e3}", exc_info=True)
+        else:
+            logger.warning("⚠️ No log channel, skipping text log.")
+
+    # Save lookup to DB
     try:
         await save_lookup(update.effective_user.id, cmd, query, data)
+        logger.info(f"✅ Lookup saved for user {update.effective_user.id}")
     except Exception as e:
-        logger.error(f"Failed to save lookup: {e}")
+        logger.error(f"❌ Failed to save lookup: {e}", exc_info=True)
 
-    # Log to channel (with error handling)
-    log_text = f"User: {update.effective_user.id}\nQuery: {query}\nCmd: /{cmd}\n\n{json.dumps(data, indent=2)}"
-    if len(log_text) > 4000:
-        log_text = log_text[:4000] + "..."
-    try:
-        await context.bot.send_message(chat_id=cmd_info["log"], text=log_text)
-    except Exception as e:
-        logger.error(f"Failed to send log to channel: {e}")
-
-# ==================== MAIN MESSAGE HANDLER ====================
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Entry point for all messages."""
-    # Apply filters
     if not await group_only(update, context):
         return
     if not await force_join_filter(update, context):
         return
 
-    # Update user in DB (with error handling)
     u = update.effective_user
     try:
         await update_user(u.id, u.username, u.first_name, u.last_name)
     except Exception as e:
         logger.error(f"Failed to update user: {e}")
 
-    # Parse command
     text = update.message.text
     if not text or not text.startswith('/'):
         return
 
     parts = text.split(maxsplit=1)
-    cmd = parts[0][1:].split('@')[0].lower()   # Remove @botusername
+    cmd = parts[0][1:].split('@')[0].lower()
     query = parts[1] if len(parts) > 1 else None
 
     if not query:
         param = COMMANDS.get(cmd, {}).get("param", "query")
-        await update.message.reply_text(f"Usage: /{cmd} <{param}>")
+        await update.message.reply_text(f"Usage: `/{cmd} <{param}>`", parse_mode=ParseMode.MARKDOWN)
         return
 
     await handle_command(update, context, cmd, query)
@@ -220,11 +417,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "verify_join":
         ok, missing = await check_force_join(context.bot, query.from_user.id)
         if ok:
-            await query.edit_message_text("✅ Verification successful! Ab aap bot use kar sakte hain.")
+            await query.edit_message_text("✅ **Verification successful! Ab aap bot use kar sakte hain.**", parse_mode=ParseMode.MARKDOWN)
         else:
             await query.edit_message_text(
-                "⚠️ Aapne abhi bhi kuch channels join nahi kiye:",
-                reply_markup=get_force_join_keyboard(missing)
+                "⚠️ **Aapne abhi bhi kuch channels join nahi kiye:**",
+                reply_markup=get_force_join_keyboard(missing),
+                parse_mode=ParseMode.MARKDOWN
             )
     elif data.startswith("copy:"):
         uid = data.split(":", 1)[1]
@@ -232,17 +430,122 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if entry and (time.time() - entry["time"]) < CACHE_EXPIRY:
             await query.message.reply_text(
                 f"```json\n{json.dumps(entry['data'], indent=2)}\n```",
-                parse_mode='Markdown'
+                parse_mode=ParseMode.MARKDOWN
             )
-            del copy_cache[uid]  # one-time use
+            del copy_cache[uid]
         else:
-            copy_cache.pop(uid, None)  # clean expired
-            await query.message.reply_text("❌ Copy data expired. Please run the command again.")
+            copy_cache.pop(uid, None)
+            await query.message.reply_text("❌ **Copy data expired. Please run the command again.**", parse_mode=ParseMode.MARKDOWN)
     elif data.startswith("search:"):
         cmd = data.split(":", 1)[1]
-        await query.message.reply_text(f"Send /{cmd} with your query.")
+        await query.message.reply_text(f"Send `/{cmd}` with your query.", parse_mode=ParseMode.MARKDOWN)
 
-# ==================== ADMIN COMMANDS ====================
+# ==================== CONVERSATION HANDLERS FOR BROADCAST/DM/BULKDM ====================
+async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id != OWNER_ID and not await is_admin(user.id):
+        await update.message.reply_text("❌ Admin only.")
+        return ConversationHandler.END
+    context.user_data['broadcast_targets'] = 'all'
+    await update.message.reply_text(
+        "Send the message you want to broadcast to all users.\n"
+        "You can send any type: text, photo, video, document, poll, etc.\n"
+        "Send /cancel to abort."
+    )
+    return WAITING_MESSAGE
+
+async def dm_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id != OWNER_ID and not await is_admin(user.id):
+        await update.message.reply_text("❌ Admin only.")
+        return ConversationHandler.END
+    try:
+        target = int(context.args[0])
+    except (IndexError, ValueError):
+        await update.message.reply_text("Usage: /dm <user_id>")
+        return ConversationHandler.END
+    context.user_data['dm_targets'] = [target]
+    await update.message.reply_text(
+        f"Send the message you want to send to {target}.\n"
+        "You can send any type: text, photo, video, document, poll, etc.\n"
+        "Send /cancel to abort."
+    )
+    return WAITING_MESSAGE
+
+async def bulkdm_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id != OWNER_ID and not await is_admin(user.id):
+        await update.message.reply_text("❌ Admin only.")
+        return ConversationHandler.END
+    if not context.args:
+        await update.message.reply_text("Usage: /bulkdm <id1> <id2> ...")
+        return ConversationHandler.END
+    targets = []
+    for arg in context.args:
+        try:
+            targets.append(int(arg))
+        except ValueError:
+            await update.message.reply_text(f"Invalid ID: {arg}")
+            return ConversationHandler.END
+    context.user_data['bulkdm_targets'] = targets
+    await update.message.reply_text(
+        f"Send the message you want to send to {len(targets)} users.\n"
+        "You can send any type: text, photo, video, document, poll, etc.\n"
+        "Send /cancel to abort."
+    )
+    return WAITING_MESSAGE
+
+async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+
+    if 'broadcast_targets' in context.user_data:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute('SELECT user_id FROM users') as cursor:
+                users = await cursor.fetchall()
+        success, fail = 0, 0
+        for (uid,) in users:
+            try:
+                await message.copy(chat_id=uid)
+                success += 1
+            except Exception as e:
+                logger.error(f"Broadcast to {uid} failed: {e}")
+                fail += 1
+        await message.reply_text(f"✅ Broadcast completed.\nSuccess: {success}\nFailed: {fail}")
+
+    elif 'dm_targets' in context.user_data:
+        targets = context.user_data['dm_targets']
+        for uid in targets:
+            try:
+                await message.copy(chat_id=uid)
+                await message.reply_text(f"✅ Message sent to {uid}")
+            except Exception as e:
+                await message.reply_text(f"❌ Failed to send to {uid}: {e}")
+
+    elif 'bulkdm_targets' in context.user_data:
+        targets = context.user_data['bulkdm_targets']
+        success, fail = 0, 0
+        for uid in targets:
+            try:
+                await message.copy(chat_id=uid)
+                success += 1
+            except Exception as e:
+                logger.error(f"BulkDM to {uid} failed: {e}")
+                fail += 1
+        await message.reply_text(f"✅ BulkDM completed.\nSuccess: {success}\nFailed: {fail}")
+
+    else:
+        await message.reply_text("Error: No operation in progress.")
+        return ConversationHandler.END
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Operation cancelled.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+# ==================== OTHER ADMIN COMMANDS ====================
 def admin_only(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
@@ -255,36 +558,8 @@ def owner_only(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id == OWNER_ID:
             return await func(update, context)
+        await update.message.reply_text("❌ Owner only command.")
     return wrapper
-
-@admin_only
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Broadcast text message to all users."""
-    if not context.args:
-        return await update.message.reply_text("Usage: /broadcast <message>")
-    msg = ' '.join(context.args)
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute('SELECT user_id FROM users') as cursor:
-            users = await cursor.fetchall()
-    success, fail = 0, 0
-    for (uid,) in users:
-        try:
-            await context.bot.send_message(chat_id=uid, text=msg)
-            success += 1
-        except:
-            fail += 1
-    await update.message.reply_text(f"✅ Success: {success}\n❌ Fail: {fail}")
-
-@admin_only
-async def dm_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send direct message to a user."""
-    try:
-        uid = int(context.args[0])
-        msg = ' '.join(context.args[1:])
-        await context.bot.send_message(chat_id=uid, text=msg)
-        await update.message.reply_text(f"✅ Message sent to {uid}")
-    except (IndexError, ValueError):
-        await update.message.reply_text("Usage: /dm <user_id> <message>")
 
 @admin_only
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -307,7 +582,6 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete user from database."""
     try:
         uid = int(context.args[0])
         async with aiosqlite.connect(DB_PATH) as db:
@@ -319,25 +593,22 @@ async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def search_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Search user by ID, username, or name."""
     if not context.args:
         return await update.message.reply_text("Usage: /searchuser <query>")
     query = ' '.join(context.args)
-    # Try exact user_id first
     try:
         uid = int(query)
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute('SELECT * FROM users WHERE user_id = ?', (uid,)) as cursor:
                 user = await cursor.fetchone()
         if user:
-            text = f"User found:\nID: {user[0]}\nUsername: @{user[4] or 'N/A'}\nName: {user[5] or ''} {user[6] or ''}\nLookups: {user[3]}\nLast seen: {user[2]}"
+            text = f"User found:\nID: {user[0]}\nUsername: @{user[1] or 'N/A'}\nName: {user[2] or ''} {user[3] or ''}\nLookups: {user[4]}\nLast seen: {user[6]}"
         else:
             text = "User not found."
         await update.message.reply_text(text)
         return
     except ValueError:
         pass
-    # Search by username or name (partial, case-insensitive)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT user_id, username, first_name, last_name FROM users WHERE username LIKE ? OR first_name LIKE ? OR last_name LIKE ? LIMIT 10",
@@ -354,7 +625,6 @@ async def search_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List users with pagination."""
     page = int(context.args[0]) if context.args else 1
     per_page = 10
     offset = (page-1)*per_page
@@ -364,12 +634,11 @@ async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text = f"👥 Users (Page {page}):\n"
     for u in users_list:
-        text += f"• {u[0]} (@{u[1] or 'N/A'}) - {u[3]} lookups\n"
+        text += f"• {u[0]} (@{u[1] or 'N/A'}) - {u[4]} lookups\n"
     await update.message.reply_text(text)
 
 @admin_only
 async def recent_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List users active in last N days."""
     days = int(context.args[0]) if context.args else 7
     users_list = await get_recent_users(days)
     text = f"📅 Users active in last {days} days:\n"
@@ -379,7 +648,6 @@ async def recent_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def inactive_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List users inactive for more than N days."""
     days = int(context.args[0]) if context.args else 30
     users_list = await get_inactive_users(days)
     text = f"💤 Users inactive for >{days} days:\n"
@@ -437,6 +705,17 @@ async def lookup_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"/{cmd}: {cnt}\n"
     await update.message.reply_text(text)
 
+@admin_only
+async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    groups = await get_all_groups()
+    if not groups:
+        await update.message.reply_text("Bot is not admin in any group yet.")
+        return
+    text = "📌 **Groups where I'm admin:**\n\n"
+    for gid, name, link in groups:
+        text += f"• **{name}**\n  ID: `{gid}`\n  Link: {link if link else 'N/A'}\n\n"
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
 # ==================== OWNER COMMANDS ====================
 @owner_only
 async def add_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -464,13 +743,34 @@ async def list_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @owner_only
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Placeholder for settings command (can be extended)."""
     await update.message.reply_text("Settings command - under development.")
 
 @owner_only
 async def full_db_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    with open(DB_PATH, 'rb') as f:
-        await update.message.reply_document(f, filename='osint_bot_backup.db')
+    try:
+        with open(DB_PATH, 'rb') as f:
+            await update.message.reply_document(f, filename='osint_bot_backup.db')
+    except Exception as e:
+        await update.message.reply_text(f"❌ Backup failed: {e}")
+
+# ==================== GROUP TRACKING ====================
+async def track_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type not in ['group', 'supergroup']:
+        return
+    if update.chat_member.new_chat_member.user.id != context.bot.id:
+        return
+    status = update.chat_member.new_chat_member.status
+    chat = update.effective_chat
+    if status in ['administrator', 'member']:
+        if status == 'administrator':
+            try:
+                invite_link = await context.bot.export_chat_invite_link(chat.id)
+            except Exception as e:
+                logger.warning(f"Could not export invite link for {chat.id}: {e}")
+                invite_link = None
+            await add_bot_group(chat.id, chat.title or "Unnamed", invite_link)
+    elif status == 'left':
+        await remove_bot_group(chat.id)
 
 # ==================== BOT INITIALIZATION ====================
 async def post_init(app: Application):
@@ -480,17 +780,43 @@ async def post_init(app: Application):
     logger.info("✅ Bot initialized, database ready.")
 
 def run_bot():
-    """Run the Telegram bot in a separate thread."""
     try:
         if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-            logger.error("❌ BOT_TOKEN not set! Please set it in Render environment variables.")
+            logger.error("❌ BOT_TOKEN not set!")
             return
 
         bot_app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
-        # Register all handlers
-        bot_app.add_handler(CommandHandler("broadcast", broadcast))
-        bot_app.add_handler(CommandHandler("dm", dm_user))
+        bot_app.add_handler(CommandHandler("start", start))
+        bot_app.add_handler(CommandHandler("help", help_command))
+        bot_app.add_handler(CommandHandler("admin", admin_help))
+
+        broadcast_conv = ConversationHandler(
+            entry_points=[CommandHandler('broadcast', broadcast_start)],
+            states={
+                WAITING_MESSAGE: [MessageHandler(filters.ALL & ~filters.COMMAND, receive_message)]
+            },
+            fallbacks=[CommandHandler('cancel', cancel)]
+        )
+        dm_conv = ConversationHandler(
+            entry_points=[CommandHandler('dm', dm_start)],
+            states={
+                WAITING_MESSAGE: [MessageHandler(filters.ALL & ~filters.COMMAND, receive_message)]
+            },
+            fallbacks=[CommandHandler('cancel', cancel)]
+        )
+        bulkdm_conv = ConversationHandler(
+            entry_points=[CommandHandler('bulkdm', bulkdm_start)],
+            states={
+                WAITING_MESSAGE: [MessageHandler(filters.ALL & ~filters.COMMAND, receive_message)]
+            },
+            fallbacks=[CommandHandler('cancel', cancel)]
+        )
+        bot_app.add_handler(broadcast_conv)
+        bot_app.add_handler(dm_conv)
+        bot_app.add_handler(bulkdm_conv)
+
+        bot_app.add_handler(CommandHandler("group", list_groups))
         bot_app.add_handler(CommandHandler("ban", ban))
         bot_app.add_handler(CommandHandler("unban", unban))
         bot_app.add_handler(CommandHandler("deleteuser", delete_user))
@@ -504,19 +830,17 @@ def run_bot():
         bot_app.add_handler(CommandHandler("dailystats", daily_stats))
         bot_app.add_handler(CommandHandler("lookupstats", lookup_stats))
 
-        # Owner-only
         bot_app.add_handler(CommandHandler("addadmin", add_admin_cmd))
         bot_app.add_handler(CommandHandler("removeadmin", remove_admin_cmd))
         bot_app.add_handler(CommandHandler("listadmins", list_admins))
         bot_app.add_handler(CommandHandler("settings", settings))
         bot_app.add_handler(CommandHandler("fulldbbackup", full_db_backup))
 
-        # Main command handler (dynamic)
         bot_app.add_handler(MessageHandler(filters.COMMAND, message_handler))
         bot_app.add_handler(CallbackQueryHandler(callback_handler))
+        bot_app.add_handler(ChatMemberHandler(track_groups, ChatMemberHandler.CHAT_MEMBER))
 
         logger.info("🚀 Bot polling started...")
-        # यहाँ stop_signals=None जोड़ना जरूरी है ताकि थ्रेड में सिग्नल एरर न आए
         bot_app.run_polling(stop_signals=None)
     except Exception as e:
         logger.exception(f"Bot thread crashed: {e}")
@@ -524,11 +848,7 @@ def run_bot():
 # ==================== FLASK WEB SERVER ====================
 @flask_app.route('/')
 def home():
-    return jsonify({
-        "status": "running",
-        "message": "OSINT Pro Bot is active",
-        "time": datetime.now().isoformat()
-    })
+    return jsonify({"status": "running", "message": "OSINT Pro Bot is active", "time": datetime.now().isoformat()})
 
 @flask_app.route('/health')
 def health():
@@ -537,14 +857,12 @@ def health():
 # ==================== MAIN ====================
 def main():
     logger.info("🔧 Starting OSINT Pro Bot on Render Web Service...")
-    
-    # Check if token is set
     if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
         logger.error("❌ BOT_TOKEN not set! Please add it in Render environment variables.")
-        logger.error("Bot will not start until token is configured.")
-        # Still run Flask to show health check but bot won't work
-    
-    # Start bot in background thread (only if token is set)
+
+    logger.warning("⚠️ SQLite database is being used. Data will be lost on every restart!")
+    logger.warning("⚠️ For production, use PostgreSQL or attach a persistent disk.")
+
     if BOT_TOKEN and BOT_TOKEN != "YOUR_BOT_TOKEN_HERE":
         bot_thread = threading.Thread(target=run_bot, daemon=True)
         bot_thread.start()
@@ -552,7 +870,6 @@ def main():
     else:
         logger.warning("⚠️ Bot not started due to missing token. Flask server only.")
 
-    # Run Flask
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"🌐 Flask server starting on port {port}")
     flask_app.run(host="0.0.0.0", port=port)
