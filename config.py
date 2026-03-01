@@ -24,8 +24,8 @@ INITIAL_ADMINS = [int(x.strip()) for x in INITIAL_ADMINS_STR.split(",") if x.str
 # Structure: list of dicts with keys: name, link, id
 FORCE_JOIN_CHANNELS = [
     {"name": "All Data Here", "link": "https://t.me/all_data_here", "id": -1003090922367},
-    {"name": "OSINT Lookup", "link": "https://t.me/osint_lookup", "id": -1003698567122},
-    {"name": "LEGEND CHATS", "link": "https://t.me/legend_chats_osint", "id": -1003672015073}
+    {"name": "OSINT Lookup", "link": "https://t.me/silent_recons", "id": -1003804154373},
+    {"name": "LEGEND CHATS", "link": "https://t.me/silent_recon", "id": -1003835777061}
 ]
 
 # ==================== LOG CHANNELS (per command) ====================
@@ -188,3 +188,4 @@ BRANDING = {
 }
 CMD_LIST_FOOTER = "\n\n────────────────────────────\n⚡ Fast • Accurate • Secure\n👨‍💻 DEVELOPED BY NULL PROTOCOL"
 REDIRECT_BOT = "@osintfatherNullBot"
+
