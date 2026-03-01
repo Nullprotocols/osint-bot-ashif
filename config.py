@@ -15,7 +15,7 @@ DB_PATH = "bot_database.db"  # SQLite file name
 
 # ==================== OWNER & ADMINS ====================
 # Render dashboard mein environment variable set karo: OWNER_ID (as integer)
-OWNER_ID = int(os.environ.get("OWNER_ID", "8104850843,6465995207"))  # fallback: 8104850843
+OWNER_ID = int(os.environ.get("OWNER_ID", "6465995207"))  # fallback: 8104850843
 # Render dashboard mein environment variable set karo: INITIAL_ADMINS (comma-separated IDs)
 INITIAL_ADMINS_STR = os.environ.get("INITIAL_ADMINS", "8104850843,6465995207")
 INITIAL_ADMINS = [int(x.strip()) for x in INITIAL_ADMINS_STR.split(",") if x.strip()]
@@ -188,4 +188,5 @@ BRANDING = {
 }
 CMD_LIST_FOOTER = "\n\n────────────────────────────\n⚡ Fast • Accurate • Secure\n👨‍💻 DEVELOPED BY NULL PROTOCOL"
 REDIRECT_BOT = "@osintfatherNullBot"
+
 
