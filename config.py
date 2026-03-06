@@ -60,13 +60,13 @@ GLOBAL_BLACKLIST = [
 # Har command ka URL, parameter description, log channel ID, description, extra blacklist
 COMMANDS = {
     "num": {
-        "url": "https://api.subhxcosmo.in/api?key=SATYAM2&type=mobile&term={}",
+        "url": "https://zionix.xo.je/znnum?number={}",
         "param": "10-digit number",
         "log": LOG_CHANNELS["num"],
         "desc": "Phone number basic lookup",
         "extra_blacklist": [
-            "Ruk ja bhencho itne m kya unlimited request lega?? Paid lena h to bolo 100-400₹ @Simpleguy444.",
-            "owner"
+            "API POWERED BY @FRAPPEASH",
+            "_powered_by"
         ]
     },
     "tg2num": {
@@ -189,6 +189,7 @@ BRANDING = {
 }
 CMD_LIST_FOOTER = "\n\n────────────────────────────\n⚡ Fast • Accurate • Secure\n👨‍💻 DEVELOPED BY NULL PROTOCOL"
 REDIRECT_BOT = "@osintfatherNullBot"
+
 
 
 
