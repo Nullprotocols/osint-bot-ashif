@@ -60,13 +60,13 @@ GLOBAL_BLACKLIST = [
 # Har command ka URL, parameter description, log channel ID, description, extra blacklist
 COMMANDS = {
     "num": {
-        "url": "https://zionix.xo.je/znnum?number={}",
+        "url": "https://database-sigma-nine.vercel.app/number/{}?api_key=YOUR-PASSWORD",
         "param": "10-digit number",
         "log": LOG_CHANNELS["num"],
         "desc": "Phone number basic lookup",
         "extra_blacklist": [
-            "API POWERED BY @FRAPPEASH",
-            "_powered_by"
+            "Rajput Suraj Raj", "● Credit: CyberSuraj"
+            "CyberSuraj", "● Developer: Rajput Suraj Raj"
         ]
     },
     "tg2num": {
@@ -189,6 +189,7 @@ BRANDING = {
 }
 CMD_LIST_FOOTER = "\n\n────────────────────────────\n⚡ Fast • Accurate • Secure\n👨‍💻 DEVELOPED BY NULL PROTOCOL"
 REDIRECT_BOT = "@osintfatherNullBot"
+
 
 
 
