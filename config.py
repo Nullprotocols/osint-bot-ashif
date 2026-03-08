@@ -60,14 +60,11 @@ GLOBAL_BLACKLIST = [
 # Har command ka URL, parameter description, log channel ID, description, extra blacklist
 COMMANDS = {
     "num": {
-        "url": "https://database-sigma-nine.vercel.app/number/{}?api_key=YOUR-PASSWORD",
+        "url": "https://number-info-ten.vercel.app/?key=lundkinger3&number={}",
         "param": "10-digit number",
         "log": LOG_CHANNELS["num"],
         "desc": "Phone number basic lookup",
-        "extra_blacklist": [
-            "Rajput Suraj Raj", "● Credit: CyberSuraj"
-            "CyberSuraj", "● Developer: Rajput Suraj Raj"
-        ]
+        "extra_blacklist": []
     },
     "tg2num": {
         "url": "https://tg2num-owner-api.vercel.app/?userid={}",
@@ -189,6 +186,7 @@ BRANDING = {
 }
 CMD_LIST_FOOTER = "\n\n────────────────────────────\n⚡ Fast • Accurate • Secure\n👨‍💻 DEVELOPED BY NULL PROTOCOL"
 REDIRECT_BOT = "@osintfatherNullBot"
+
 
 
 
